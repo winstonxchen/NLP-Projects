@@ -1,0 +1,178 @@
+# install required libraries using pyspark
+import nltk
+nltk.download('punkt')
+
+sc.install_pypi_package("sklearn")
+sc.install_pypi_package("networkx")
+sc.install_pypi_package("pandas")
+sc.install_pypi_package("py-rouge")
+sc.install_pypi_package("IPython")
+sc.list_packages()
+
+# load library
+import nltk
+from nltk.tokenize.punkt import PunktSentenceTokenizer
+from IPython.display import display
+from pyspark.sql.functions import monotonically_increasing_id
+from pyspark.sql.functions import col    
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.feature_extraction.text import TfidfTransformer
+import networkx as nx
+import rouge 
+
+filePath = "s3://cs6350proj20/cnn100/stories"
+n_summary = 1
+
+
+# load data from aws s3
+df = sc.wholeTextFiles(filePath).toDF().toDF("file", "story")
+
+df.show()
+print("data count: " + str(df.count()))
+
+
+# data pre-processing
+END_TOKENS = ['.', '!', '?', '...', "'", "`", '"', u'\u201d', u'\u2019', ")"]  # acceptable ways to end a sentence
+
+def tokenize_story(story: str):
+    tk_lines = PunktSentenceTokenizer().tokenize(story.lower())
+    return tk_lines
+
+def separate_summary(story_lines: list):
+    fix_story_lines = []
+    for line in story_lines:
+        if "\n" in line:
+            new_line = line.strip().split("\n")
+            fix_story_lines.extend(new_line)
+        else:
+            fix_story_lines.append(line)
+
+    article_lines = []
+    highlights = []
+    next_is_highlight = False
+    for idx, line in enumerate(fix_story_lines):
+        if line == "":
+            continue  # empty line
+        elif line.startswith("@highlight"):
+            next_is_highlight = True
+        elif next_is_highlight:
+            highlights.append(line)
+        else:
+            article_lines.append(line)
+
+    summary = '. '.join(highlights)
+    return article_lines, summary
+
+def fix_missing_period(line: str):
+    """Adds a period to a line that is missing a period"""
+    if "@highlight" in line: return line
+    if line == "": return line
+    if line[-1] in END_TOKENS: return line
+    return line + " ."
+  
+story_column = df.select("story")
+tk_stories = story_column.rdd.map(lambda row: tokenize_story(row[0]))
+tk_stories = tk_stories.map(lambda story: list(map(lambda line: fix_missing_period(line), story)))
+tk_stories = tk_stories.map(lambda story: separate_summary(story))
+
+panda = df.toPandas()
+
+panda["tk_stories"] = tk_stories.map(lambda story: story[0]).collect()
+panda["summary"] = tk_stories.map(lambda story: story[1]).collect()
+
+rdd_stories = sc.parallelize(panda["tk_stories"])
+display(panda)
+
+
+# generate tfidf
+def tf_idf(story_lines):
+    term_document_matrix = CountVectorizer().fit_transform(story_lines)
+    array = term_document_matrix.toarray()
+    matrix_normalized = TfidfTransformer().fit_transform(array)
+    result = matrix_normalized * matrix_normalized.T
+    return result
+
+  
+tf_idf_rdd = rdd_stories.map(lambda story_lines: tf_idf(story_lines))
+panda['tf_idf'] = tf_idf_rdd.collect()
+print(panda['tf_idf'])
+
+
+# get the scores using the pagerank algorithm on the graph constrcuted above
+def textrank(array):
+    similarity = nx.from_scipy_sparse_matrix(array)
+    scores = nx.pagerank(similarity)
+    return scores
+
+textrank_scores_rdd = tf_idf_rdd.map(lambda array: textrank(array))
+panda['textrank_scores'] = textrank_scores_rdd.collect()
+textrank_scores_rdd.collect()
+
+print(panda.columns.values)
+
+
+def top_n_summary(n, ranked_sentences_list):
+    s = ""
+    for k in range(n):
+        if k < len(ranked_sentences_list):
+            s = s + " " + ranked_sentences_list[k][1]
+    return s
+
+#generate summary
+generated_summary = []
+for idx, row in panda.iterrows():
+    sentence_lst = []
+    for sentence_idx, sentence in enumerate(row['tk_stories']):
+        sentence_lst.append((row['textrank_scores'][sentence_idx], sentence))
+
+    ranked = sorted(sentence_lst, reverse=True)
+
+    generated_summary.append(top_n_summary(n_summary, ranked))
+
+panda['generated_summary'] = generated_summary
+
+
+def prepare_results(p, r, f):
+  return '\t{}:\t{}: {:5.2f}\t{}: {:5.2f}\t{}: {:5.2f}'.format(metric, 'P', 100.0 * p, 'R', 100.0 * r, 'F1', 100.0 * f)
+
+# rouge evaluation
+for aggregator in ['Avg']:
+    print('Evaluation with {}'.format(aggregator))
+    apply_avg = aggregator == 'Avg'
+    apply_best = aggregator == 'Best'
+
+    evaluator = rouge.Rouge(metrics=['rouge-n', 'rouge-l', 'rouge-w'],
+                            max_n=2,
+                            limit_length=True,
+                            length_limit=100,
+                            length_limit_type='words',
+                            apply_avg=apply_avg,
+                            alpha=0.5,  # Default F1_score
+                            weight_factor=1.2,
+                            stemming=True)
+
+    hypothesis = []
+    reference = []
+    for idx, row in panda.iterrows():
+        h = row['generated_summary']
+        hypothesis.append(h)
+        r = row['summary']
+        reference.append(r)
+
+    scores = evaluator.get_scores(hypothesis, reference)
+
+    for metric, results in sorted(scores.items(), key=lambda x: x[0]):
+        if not apply_avg and not apply_best:  # value is a type of list as we evaluate each summary vs each reference
+            for hypothesis_id, results_per_ref in enumerate(results):
+                nb_references = len(results_per_ref['p'])
+                for reference_id in range(nb_references):
+                    print('\tHypothesis #{} & Reference #{}: '.format(hypothesis_id, reference_id))
+                    print('\t' + prepare_results(results_per_ref['p'][reference_id], results_per_ref['r'][reference_id],
+                                                 results_per_ref['f'][reference_id]))
+            print()
+        else:
+            print(prepare_results(results['p'], results['r'], results['f']))
+
+    print()
+
+
