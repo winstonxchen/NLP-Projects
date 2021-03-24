@@ -1,3 +1,3 @@
 # NLP-Projects
 
-1.Text Summarization Using TextRank Algorithm using PySpark
+1.Automatic Summerization of CNN News Using TextRank Algorithm and PySpark
