@@ -1,0 +1,90 @@
+//Reading the MoviesSummaries datasets
+val movieSummaries = "/FileStore/tables/plot_summaries.txt"
+val metadata = "/FileStore/tables/movie_metadata-ab497.tsv"
+val searchQueries = "/FileStore/tables/search_queries.txt"
+
+//Converting the movieSummaries to data frame
+val inputDF = spark.read.option("header", false).option("delimiter","\t").csv(movieSummaries).toDF("movieID", "summary")
+
+//display the data frame inputDF
+display(inputDF)
+
+
+//importing libraries for tokenizing and stop-word removal
+import org.apache.spark.ml.feature.RegexTokenizer
+import org.apache.spark.ml.feature.StopWordsRemover
+
+//Applying tokenizer on summary column of the inputDF
+//input column: "summary"; output column: "tokens"
+val regex = new RegexTokenizer("regexTok").setInputCol("summary").setPattern("\\W+").setOutputCol("tokens")
+val regextoken = regex.transform(inputDF)
+
+//displaying the result after tokenizing
+display(regextoken)
+
+//removing stopwords from the tokenized summary column:
+//input column: "tokens"; output column: "words"
+val stopWords = new StopWordsRemover().setInputCol("tokens").setOutputCol("words")
+val cleanDF = stopWords.transform(regextoken)
+
+display(cleanDF)
+
+//map function for every MovieID key -> convert "words" column to Array
+val input = cleanDF.select("MovieID","words").rdd.map(x => (x(0).asInstanceOf[String], x(1).asInstanceOf[Seq[String]].toArray)) 
+
+//Map function for metadata
+val movies = sc.textFile(metadata).map(_.split("\t")).map(x => (x(0), x(2)))
+movies.collect()
+
+import scala.math.log
+val count = input.count
+
+//reduce function by using tf-idf
+val tf = input.flatMap(x => x._2.map(y => ((x._1, y), 1))).reduceByKey((x,y) => x+y).map(x => (x._1._2, (x._1._1, x._2)))    
+
+val df = tf.map(x => (x._1, 1)).reduceByKey((x,y) => x+y).map(x => (x._1, (x._2, log(count/x._2))))
+
+var tf_idf = df.join(tf).map(x => (x._2._2._1, (x._1, x._2._2._2, x._2._1._1, x._2._1._2, x._2._2._2 * x._2._1._2)))
+tf_idf = movies.join(tf_idf).map(x => x._2)
+
+
+//cosine Similarity by tf-idf for multiple search queries
+def consineSimilarity (rdd_tfidf: RDD[(String, (String, Int, Int, Double, Double))], tokens: Array[String]) : Array[String] = {
+  
+  var cosTf = sc.parallelize(tokens).map(x => (x, 1)).reduceByKey((x,y) => x+y)
+  
+  var rdd_df = rdd_tfidf.map(x => x._2).map(x => (x._1, (x._3, x._4)))
+  
+  var cosTfIdf = cosTf.leftOuterJoin(rdd_df).map(x => (x._1, if (x._2._2.isEmpty) 0 else x._2._1 * x._2._2.get._2))
+  
+  var merged = rdd_tfidf.map(x => (x._2._1, (x._1, x._2._5))).join(cosTfIdf).map(x => x._2).map(x => (x._1._1, x._1._2, x._2))
+  
+  var dotproduct = merged.map(x => (x._1, (x._2 * x._3, x._3 * x._3, x._2 * x._2))).reduceByKey((x,y) => ((x._1 + y._1, x._2 + y._2, x._3 + y._3)))
+  
+  return dotproduct.map(x => (x._1, x._2._1/(math.sqrt(x._2._2) * math.sqrt(x._2._3)))).sortBy(-_._2).map(_._1).take(10)
+}
+
+
+def tfidfFinal (rdd_tfidf: RDD[(String, (String, Int, Int, Double, Double))], tokens: Array[String]) : Array[String] = {
+  
+  return rdd_tfidf.filter(x => x._2._1 == tokens.head).sortBy(-_._2._5).map(_._1).take(10)
+}
+
+
+//function to display query term and the results of the Top 10 relevant movies based on the search query term
+import scala.util.control.Breaks._
+val query_terms = sc.textFile(searchQueries).collect
+for (query_term <- query_terms) {
+  println(query_term)
+  var query_tokens = query_term.split(" ").map(_.toLowerCase.trim)
+  breakable {
+    if (query_tokens.length == 0) {
+      break
+    } else {
+      var result = if (query_tokens.length > 1) consineSimilarity (tf_idf, query_tokens) else tfidfFinal(tf_idf, query_tokens)
+      println("Top 10 relavent Movies based on user search: ")
+      result.foreach {println}
+    }
+  }
+  println
+}
