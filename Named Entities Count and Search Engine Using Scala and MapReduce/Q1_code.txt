@@ -1,0 +1,44 @@
+//Loading the text data and reading it as a csv file.
+val dataFile = spark.read.option("header", false).option("delimiter", "\t").csv("/FileStore/tables/TomSawyertext.txt").select($"_c0".as("text"))
+
+//displaying the data
+dataFile.collect()
+
+//Created a library through workspace and installed JohnSnowLabs:spark-nlp:2.2.1 package from Maven Coordinates to the cluster 
+//This is done in order to import the other JohnSnow packeages through the main library
+//importing libraries for named entitity extraction pipeline
+import com.johnsnowlabs.nlp.annotator._
+import com.johnsnowlabs.nlp.annotators.ner.NerConverter
+import com.johnsnowlabs.nlp.base._
+import com.johnsnowlabs.util.Benchmark
+import org.apache.spark.ml.Pipeline
+import org.apache.spark.sql.SparkSession
+import org.apache.hadoop.mapreduce.lib.input.TextInputFormat
+import org.apache.hadoop.io.{LongWritable, Text}
+import org.apache.spark.rdd.RDD
+import scala.collection.mutable.ArrayBuffer
+import scala.util.control.Breaks._
+import com.johnsnowlabs.nlp.pretrained.PretrainedPipeline
+
+//named entitity extraction pipeline
+val pipeline = PretrainedPipeline("onto_recognize_entities_sm", lang = "en")
+
+//applying the pipeline to the input data
+val namedEntities = pipeline.transform(dataFile).select("entities.result")
+
+//exploding the result column as text and converting to rdd
+import org.apache.spark.ml.feature.{RegexTokenizer, Tokenizer}
+import org.apache.spark.sql.functions._
+val namedEntitiesRdd = namedEntities.select(explode(col("result")).as("text")).rdd
+
+//displaying only the named entites of the data
+namedEntitiesRdd.collect()
+
+//map function to form (key,value) pair where key -> named entity ; value -> its occurence in the data
+val namedEntitiesCount = namedEntitiesRdd.map(x => (x,1))
+
+//reduce function to calculate frequency of occurence of each unique named entity (key)
+val namedEntitiesreduce = namedEntitiesCount.reduceByKey((x,y) => x+y).sortBy(-_._2)
+
+//display the output of the reduce task
+namedEntitiesreduce.collect()
