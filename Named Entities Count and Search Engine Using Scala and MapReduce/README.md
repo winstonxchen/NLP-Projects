@@ -1,3 +1,5 @@
+# Word Count for Named Entities and Search Engine for Movies Data
+
 **Technology: Spark in Scala.**<br>
 
 **•	Pre-processed a large text file from gutenberg.org website and then implemented a mapreduce function to the data to count the most frequent named entities in the text.** <br>
