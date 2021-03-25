@@ -5,7 +5,6 @@ import numpy as np
  
 class Viterbi(object):
 
-    print("HW1 Q4 POS Tagging\n")
     
     start = [0.38, 0.32, 0.05, 0.0, 0.0, 0.11, 0.1, 0.23]  #start probability distribution (pi)
     
