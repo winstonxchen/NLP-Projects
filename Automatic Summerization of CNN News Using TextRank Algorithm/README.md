@@ -29,13 +29,10 @@ Steps to execute code:
 3. change to PySpark kernel
 
 
-4. check and install required packages
+4. set input data path and number of summary sentence to be extracted
 
 
-5. set input data path and number of summary sentence to be extracted
-
-
-6. run all cells 
+5. run all cells 
 
 
 	
