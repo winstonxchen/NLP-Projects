@@ -1,9 +1,9 @@
 
 # POS Tagging on input sentences using Python and HMM 
 
-**Technology:Python.<br>
-• Library used: nltk,numpy
-• Stanford POS Tagger (full Stanford Tagger version 3.6.0 [124 MB]): https://nlp.stanford.edu/static/software/tagger.shtml:
+**Technology:Python<br>
+• Library used: nltk,numpy<br>
+• Stanford POS Tagger (full Stanford Tagger version 3.6.0 [124 MB]): https://nlp.stanford.edu/static/software/tagger.shtml<br>
 • Implemented the hidden markov models to peform POS tagging on the input sentences and compare it to the Stanford POS Tagger.
 <br>**
 
